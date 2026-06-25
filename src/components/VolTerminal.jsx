@@ -17,6 +17,8 @@ import {
   makeFlowEvent,
   getCalendar,
 } from "../lib/dataProvider.js";
+import NeuralBackground from "@/components/ui/flow-field-background";
+import { CandlestickChart } from "lucide-react";
 
 // ── palette ── softer slate-blue, easier on the eyes than phosphor-on-black
 const C = {
@@ -166,14 +168,27 @@ export default function VolTerminal() {
   const calendar = useMemo(() => getCalendar(), []);
 
   return (
-    <div style={{ background: C.bg, color: C.txt, fontFamily: FONT, fontSize: 13, minHeight: "100%" }}>
+    <>
+      {/* ── animated flow-field backdrop — subtle so the data stays readable ── */}
+      <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }} aria-hidden>
+        <NeuralBackground color="#818cf8" trailOpacity={0.07} particleCount={500} speed={0.65} />
+      </div>
+
+      {/* glass desk surface: ~80% opaque + blur keeps tables crisp while the flow shows through */}
+      <div style={{ position: "relative", zIndex: 1, background: "rgba(22,26,33,0.8)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", color: C.txt, fontFamily: FONT, fontSize: 13, minHeight: "100%" }}>
       {/* top bar */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 16px", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontWeight: 700, letterSpacing: "0.14em", color: C.cyan }}>◰ VOL·TERMINAL</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 800, fontSize: 16, letterSpacing: "0.01em" }}>
+            <CandlestickChart size={18} style={{ color: "#818cf8" }} />
+            <span style={{ background: "linear-gradient(90deg,#a5b4fc,#818cf8 45%,#5BC8D8)", WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent", color: "transparent" }}>OddsFinance</span>
+          </span>
           <span style={{ color: C.dim, fontSize: 11 }}>OPTIONS · VOLATILITY · MACRO DESK</span>
         </div>
-        <span style={{ fontSize: 10, color: C.dim }}>r={(RISK_FREE * 100).toFixed(1)}% · BS+IV engine live · data: simulated</span>
+        <span style={{ fontSize: 10, color: C.dim, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.green, display: "inline-block" }} />
+          simulated data
+        </span>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "212px 1fr 248px" }}>
@@ -305,7 +320,8 @@ export default function VolTerminal() {
         <span>PROTOTYPE · SIMULATED DATA · REAL BLACK–SCHOLES + IV ENGINE · NOT INVESTMENT ADVICE</span>
         <span>EU/IT · educational</span>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
