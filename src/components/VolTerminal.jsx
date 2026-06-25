@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   bs,
   syntheticIV,
+  impliedVol,
   strategyPayoff,
   strategyNet,
   portfolioGreeks,
@@ -17,20 +18,23 @@ import {
   getCalendar,
 } from "../lib/dataProvider.js";
 
-// ── palette ──
+// ── palette ── softer slate-blue, easier on the eyes than phosphor-on-black
 const C = {
-  bg: "#070B0F",
-  panel: "#0D141B",
-  panel2: "#101A22",
-  line: "#1C2A35",
-  txt: "#C8D6E0",
-  dim: "#5C7488",
-  cyan: "#35E0D8",
-  green: "#3DDC84",
-  red: "#FF5B6E",
-  amber: "#FFB02E",
-  violet: "#9B8CFF",
+  bg: "#161A21",        // dark slate, not pure black
+  panel: "#1D222B",     // raised surface
+  panel2: "#232A35",    // selected / highlighted surface
+  line: "#2E3744",      // borders
+  txt: "#D6DCE4",        // primary text (soft off-white)
+  dim: "#7A8696",        // secondary text
+  cyan: "#5BC8D8",       // accent (desaturated teal)
+  green: "#5FCB8A",      // positive (muted)
+  red: "#E87784",        // negative (muted coral)
+  amber: "#E0A852",      // warning (warm sand)
+  violet: "#9D93D8",     // curves / secondary accent
 };
+
+// font stack — sober technical mono
+const FONT = "'JetBrains Mono','Roboto Mono',ui-monospace,SFMono-Regular,Menlo,monospace";
 
 const fmt = (x, d = 2) =>
   x == null ? "—" : x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -162,7 +166,7 @@ export default function VolTerminal() {
   const calendar = useMemo(() => getCalendar(), []);
 
   return (
-    <div style={{ background: C.bg, color: C.txt, fontFamily: "'IBM Plex Mono',Menlo,monospace", fontSize: 13, minHeight: "100%" }}>
+    <div style={{ background: C.bg, color: C.txt, fontFamily: FONT, fontSize: 13, minHeight: "100%" }}>
       {/* top bar */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 16px", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -232,7 +236,7 @@ export default function VolTerminal() {
 
           {/* tabs */}
           <div style={{ display: "flex", borderBottom: `1px solid ${C.line}`, marginBottom: 12 }}>
-            {[["chain", "CHAIN + GREEKS"], ["surface", "VOL SURFACE"], ["skew", "TERM / SKEW"], ["builder", "STRATEGY BUILDER"], ["calendar", "ECON CALENDAR"]].map(([k, l]) => (
+            {[["chain", "CHAIN + GREEKS"], ["surface", "VOL SURFACE"], ["skew", "TERM / SKEW"], ["pricing", "PRICING LAB"], ["builder", "STRATEGY BUILDER"], ["calendar", "ECON CALENDAR"]].map(([k, l]) => (
               <button key={k} onClick={() => setTab(k)} style={tabBtn(tab === k)}>{l}</button>
             ))}
           </div>
@@ -257,6 +261,7 @@ export default function VolTerminal() {
           {tab === "chain" && <ChainTable chain={chain} type={chainType} />}
           {tab === "surface" && <Surface surface={surface} cols={moneynessCols} />}
           {tab === "skew" && <TermSkew sel={sel} T={T} expLabel={EXPIRIES[expIdx].label} />}
+          {tab === "pricing" && <PricingLab sel={sel} S={S} />}
           {tab === "builder" && (
             <StrategyBuilder
               legs={legs} addLeg={addLeg} updateLeg={updateLeg} removeLeg={removeLeg}
@@ -571,6 +576,189 @@ function Calendar({ calendar }) {
         ))}
       </div>
     </div>
+  );
+}
+
+// ═══════════════ PRICING LAB ═══════════════
+// Manual pricing with full control over every input. Compare a MARKET IV
+// against your own THEORETICAL vol to flag rich/cheap mismatches.
+const RATE_PRESETS = [
+  { label: "ESTR €", v: 0.0265 },
+  { label: "SOFR $", v: 0.0433 },
+  { label: "SONIA £", v: 0.0470 },
+  { label: "BoJ ¥", v: 0.0050 },
+  { label: "SNB ₣", v: 0.0125 },
+];
+
+function PricingLab({ sel, S: spotLive }) {
+  const [S, setS] = useState(() => +spotLive.toFixed(2));
+  const [K, setK] = useState(() => Math.round(spotLive));
+  const [days, setDays] = useState(30);
+  const [r, setR] = useState(0.0433);
+  const [q, setQ] = useState(0);
+  const [type, setType] = useState("call");
+  const [marketIV, setMarketIV] = useState(() => +(syntheticIV(sel.baseVol, 1, 30 / 365) * 100).toFixed(1));
+  const [theoIV, setTheoIV] = useState(() => +(syntheticIV(sel.baseVol, 1, 30 / 365) * 100).toFixed(1));
+  const [marketPrice, setMarketPrice] = useState(null);
+
+  const T = days / 365;
+
+  // price under each vol
+  const mkt = useMemo(() => bs(S, K, T, r, marketIV / 100, type, q), [S, K, T, r, marketIV, type, q]);
+  const theo = useMemo(() => bs(S, K, T, r, theoIV / 100, type, q), [S, K, T, r, theoIV, type, q]);
+
+  // if user typed a market price, back out its implied vol
+  const backedOutIV = useMemo(() => {
+    if (!marketPrice || marketPrice <= 0) return null;
+    const iv = impliedVol(marketPrice, S, K, T, r, type, q);
+    return iv ? iv * 100 : null;
+  }, [marketPrice, S, K, T, r, type, q]);
+
+  // mismatch: theoretical price vs market price (priced at market IV)
+  const priceDiff = theo.price - mkt.price;
+  const volDiff = theoIV - marketIV;
+  const richCheap = priceDiff > 0.01 ? "UNDERPRICED" : priceDiff < -0.01 ? "OVERPRICED" : "FAIR";
+  const rcColor = richCheap === "UNDERPRICED" ? C.green : richCheap === "OVERPRICED" ? C.red : C.dim;
+
+  const inRow = { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 };
+  const lbl = { fontSize: 10, color: C.dim, letterSpacing: "0.08em" };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 18 }}>
+      {/* ── inputs ── */}
+      <div>
+        <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.16em", marginBottom: 10, borderLeft: `2px solid ${C.cyan}`, paddingLeft: 7 }}>INPUTS</div>
+
+        <div style={inRow}><span style={lbl}>SPOT (S)</span><PriceIn value={S} onChange={setS} step="0.01" /></div>
+        <div style={inRow}><span style={lbl}>STRIKE (K)</span><PriceIn value={K} onChange={setK} step="0.5" /></div>
+        <div style={inRow}><span style={lbl}>DAYS TO EXP</span><PriceIn value={days} onChange={setDays} step="1" /></div>
+        <div style={{ fontSize: 9, color: C.dim, textAlign: "right", marginTop: -4, marginBottom: 8 }}>T = {T.toFixed(4)} yr</div>
+
+        {/* risk-free with presets */}
+        <div style={{ ...inRow, marginBottom: 4 }}><span style={lbl}>RISK-FREE r (%)</span><PriceIn value={+(r * 100).toFixed(3)} onChange={(v) => setR(v / 100)} step="0.01" /></div>
+        <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginBottom: 10 }}>
+          {RATE_PRESETS.map((p) => (
+            <button key={p.label} onClick={() => setR(p.v)} style={{
+              background: Math.abs(r - p.v) < 1e-6 ? C.cyan : "transparent",
+              color: Math.abs(r - p.v) < 1e-6 ? C.bg : C.dim,
+              border: `1px solid ${C.line}`, padding: "2px 6px", fontSize: 9,
+              fontFamily: FONT, cursor: "pointer", fontWeight: 700,
+            }}>{p.label} {(p.v * 100).toFixed(2)}</button>
+          ))}
+        </div>
+
+        <div style={inRow}><span style={lbl}>DIV YIELD q (%)</span><PriceIn value={+(q * 100).toFixed(2)} onChange={(v) => setQ(v / 100)} step="0.1" /></div>
+
+        <div style={{ display: "flex", gap: 5, margin: "8px 0 14px" }}>
+          {["call", "put"].map((tp) => (
+            <button key={tp} onClick={() => setType(tp)} style={{
+              flex: 1, background: type === tp ? (tp === "call" ? C.green : C.red) : "transparent",
+              color: type === tp ? C.bg : C.dim, border: `1px solid ${C.line}`,
+              padding: "5px 0", fontSize: 11, fontFamily: FONT, cursor: "pointer", fontWeight: 700,
+            }}>{tp.toUpperCase()}</button>
+          ))}
+        </div>
+
+        {/* the two vols */}
+        <div style={{ background: C.panel, border: `1px solid ${C.line}`, padding: 10, marginBottom: 10 }}>
+          <div style={{ ...inRow, marginBottom: 6 }}>
+            <span style={{ ...lbl, color: C.amber }}>● MARKET IV (%)</span>
+            <PriceIn value={marketIV} onChange={setMarketIV} step="0.5" />
+          </div>
+          <div style={inRow}>
+            <span style={{ ...lbl, color: C.violet }}>● YOUR VOL (%)</span>
+            <PriceIn value={theoIV} onChange={setTheoIV} step="0.5" />
+          </div>
+          <div style={{ fontSize: 9, color: C.dim, marginTop: 4 }}>
+            spread {volDiff >= 0 ? "+" : ""}{volDiff.toFixed(1)} vol pts
+          </div>
+        </div>
+
+        {/* reverse: price → IV */}
+        <div style={{ background: C.panel, border: `1px solid ${C.line}`, padding: 10 }}>
+          <div style={inRow}>
+            <span style={lbl}>MKT PRICE →</span>
+            <PriceIn value={marketPrice ?? ""} onChange={setMarketPrice} step="0.01" placeholder="—" />
+          </div>
+          <div style={{ fontSize: 11, color: backedOutIV ? C.cyan : C.dim }}>
+            backed-out IV: {backedOutIV ? backedOutIV.toFixed(2) + "%" : "enter a price"}
+          </div>
+        </div>
+      </div>
+
+      {/* ── outputs ── */}
+      <div>
+        <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.16em", marginBottom: 10, borderLeft: `2px solid ${C.cyan}`, paddingLeft: 7 }}>VALUATION</div>
+
+        {/* mismatch banner */}
+        <div style={{ background: C.panel2, border: `1px solid ${rcColor}`, padding: "12px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 9, color: C.dim }}>MARKET vs YOUR FAIR VALUE</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: rcColor }}>{richCheap}</div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 9, color: C.dim }}>edge</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: rcColor }}>
+              {priceDiff >= 0 ? "+" : ""}{priceDiff.toFixed(3)}
+            </div>
+            <div style={{ fontSize: 9, color: C.dim }}>{mkt.price > 0 ? ((priceDiff / mkt.price) * 100).toFixed(1) : "0"}%</div>
+          </div>
+        </div>
+
+        {/* two-column price+greeks comparison */}
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: C.dim, fontSize: 10 }}>
+              <th style={{ textAlign: "left", padding: "5px 8px" }}>METRIC</th>
+              <th style={{ textAlign: "right", padding: "5px 8px", color: C.amber }}>@ MARKET {marketIV.toFixed(1)}%</th>
+              <th style={{ textAlign: "right", padding: "5px 8px", color: C.violet }}>@ YOUR {theoIV.toFixed(1)}%</th>
+              <th style={{ textAlign: "right", padding: "5px 8px" }}>Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            <PriceRow label="Price" m={mkt.price} t={theo.price} d={3} highlight />
+            <PriceRow label="Δ Delta" m={mkt.delta} t={theo.delta} d={4} />
+            <PriceRow label="Γ Gamma" m={mkt.gamma} t={theo.gamma} d={5} />
+            <PriceRow label="Θ Theta /day" m={mkt.theta} t={theo.theta} d={4} />
+            <PriceRow label="V Vega /pt" m={mkt.vega} t={theo.vega} d={4} />
+            <PriceRow label="ρ Rho" m={mkt.rho} t={theo.rho} d={4} />
+            <PriceRow label="Vanna" m={mkt.vanna} t={theo.vanna} d={5} />
+            <PriceRow label="Volga" m={mkt.volga} t={theo.volga} d={4} />
+          </tbody>
+        </table>
+
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 14, lineHeight: 1.6, background: C.panel, padding: 10, border: `1px solid ${C.line}` }}>
+          <b style={{ color: C.txt }}>How to read it:</b> price the option at the market's implied vol and again at your own volatility estimate.
+          If your vol is higher, you think the option is worth more than the screen — it's <span style={{ color: C.green }}>UNDERPRICED</span> and the edge is positive.
+          Lower vol → <span style={{ color: C.red }}>OVERPRICED</span>. The reverse box backs out the IV embedded in any market price via Newton–Raphson, so you can compare it against your fair vol directly.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PriceRow({ label, m, t, d, highlight }) {
+  const diff = t - m;
+  return (
+    <tr style={{ borderBottom: `1px solid ${C.panel}`, background: highlight ? C.panel : "transparent" }}>
+      <td style={{ padding: "6px 8px", color: highlight ? C.txt : C.dim, fontWeight: highlight ? 700 : 400 }}>{label}</td>
+      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: highlight ? 700 : 400 }}>{m.toFixed(d)}</td>
+      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: highlight ? 700 : 400 }}>{t.toFixed(d)}</td>
+      <td style={{ padding: "6px 8px", textAlign: "right", color: Math.abs(diff) < 1e-9 ? C.dim : diff > 0 ? C.green : C.red }}>
+        {diff >= 0 ? "+" : ""}{diff.toFixed(d)}
+      </td>
+    </tr>
+  );
+}
+
+function PriceIn({ value, onChange, step = "1", placeholder }) {
+  return (
+    <input
+      type="number" value={value} step={step} placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value === "" ? null : parseFloat(e.target.value))}
+      style={{ width: 90, background: C.bg, color: C.txt, border: `1px solid ${C.line}`,
+        fontSize: 13, fontFamily: FONT, padding: "4px 6px", textAlign: "right" }}
+    />
   );
 }
 
